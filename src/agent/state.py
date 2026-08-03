@@ -56,3 +56,16 @@ class AgentState(TypedDict):
     # once at upload time in app.py (see retrieval.build_collection) and
     # passed straight through -- the graph never builds or rebuilds it.
     retriever_collection: NotRequired[object | None]
+
+    # Set by classify_request_type_node: the very first routing decision,
+    # made before anything doc-related -- does this request want to
+    # invoke a skill (e.g. "create a Word doc") or is it a normal
+    # question/conversation ("qa", which then goes through the existing
+    # doc-relevance routing below)?
+    request_type: NotRequired[str]
+
+    # Counts iterations of the skill_agent <-> skill_tools loop. Used to
+    # force a stop after MAX_SKILL_LOOP_ITERATIONS (see graph.py) -- an
+    # unbounded tool-calling loop is a real production risk (runaway
+    # cost, a hung UI), not just a theoretical one.
+    skill_loop_iterations: NotRequired[int]

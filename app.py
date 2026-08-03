@@ -16,7 +16,7 @@ onward. Right now we're only proving:
 import streamlit as st
 
 from agent.documents import count_tokens, extract_text
-from agent.graph import RAW_CONTEXT_TOKEN_THRESHOLD
+from agent.graph import RAW_CONTEXT_TOKEN_THRESHOLD, LOADED_SKILLS, WORKSPACE_DIR
 from agent.graph import app as agent_app
 from agent.retrieval import build_collection
 
@@ -37,6 +37,13 @@ if "uploaded_doc" not in st.session_state:
 
 # --- Sidebar: file upload ----------------------------------------------
 with st.sidebar:
+    st.subheader("Available skills")
+    if LOADED_SKILLS:
+        for skill in LOADED_SKILLS.values():
+            st.caption(f"**{skill.name}** — {skill.description[:100]}...")
+    else:
+        st.caption("No skills loaded.")
+
     st.subheader("Upload a document")
     uploaded_file = st.file_uploader(
         "Choose a file", type=["pdf", "docx"], key="file_uploader"
@@ -83,6 +90,29 @@ with st.sidebar:
             f"(~{doc['token_count']} tokens \u2192 will use **{route}**)"
         )
 
+    st.subheader("Generated files")
+    DOWNLOADABLE_EXTENSIONS = {".docx", ".pdf", ".pptx", ".xlsx", ".dotx"}
+    workspace_files = (
+        sorted(
+            p
+            for p in WORKSPACE_DIR.glob("*")
+            if p.is_file() and p.suffix.lower() in DOWNLOADABLE_EXTENSIONS
+        )
+        if WORKSPACE_DIR.exists()
+        else []
+    )
+
+    if workspace_files:
+        for f in workspace_files:
+            st.download_button(
+                label=f"\U0001f4c4 {f.name}",
+                data=f.read_bytes(),
+                file_name=f.name,
+                key=f"download_{f.name}",
+            )
+    else:
+        st.caption("Nothing generated yet.")
+
 # --- Render existing chat history --------------------------------------
 for role, content in st.session_state.messages:
     with st.chat_message(role):
@@ -108,10 +138,54 @@ if user_input:
         graph_input["retriever_collection"] = doc["collection"]
         graph_input["doc_name"] = doc["name"]
 
+    # Snapshot which downloadable files exist BEFORE this turn, so we can
+    # tell the user exactly what's new afterward (the sidebar section
+    # above already ran earlier in this same script pass -- it can't see
+    # files this turn is about to create).
+    files_before = set(WORKSPACE_DIR.glob("*")) if WORKSPACE_DIR.exists() else set()
+
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            result = agent_app.invoke(graph_input)
-            reply = result["messages"][-1].content
+            try:
+                result = agent_app.invoke(graph_input)
+                reply = result["messages"][-1].content
+            except Exception as exc:
+                # Last line of defense: _safe_llm_invoke inside graph.py
+                # already catches LLM-call failures, but this catches
+                # anything else in the graph (e.g. a tool execution
+                # error) so a single bad turn never takes down the whole
+                # app -- the user sees an error message and can keep
+                # chatting, instead of Streamlit's raw traceback screen.
+                logger_reply = f"Something went wrong processing that request: {type(exc).__name__}: {exc}"
+                reply = (
+                    "Sorry, I ran into an unexpected error handling that "
+                    "request. Check logs/agent_run.log for details, and "
+                    "feel free to try again or rephrase."
+                )
+                st.error(logger_reply)
+
+            files_after = (
+                set(WORKSPACE_DIR.glob("*")) if WORKSPACE_DIR.exists() else set()
+            )
+            new_files = sorted(
+                p.name
+                for p in (files_after - files_before)
+                if p.suffix.lower() in DOWNLOADABLE_EXTENSIONS
+            )
+            if new_files:
+                file_list = ", ".join(new_files)
+                reply = (
+                    reply
+                    + f"\n\n\U0001f4c4 **New file(s) ready in the sidebar:** {file_list}"
+                )
+
             st.markdown(reply)
 
     st.session_state.messages.append(("assistant", reply))
+
+    if new_files:
+        # The sidebar's file list was already rendered earlier in this
+        # script pass, before these files existed -- a rerun forces a
+        # fresh top-to-bottom pass so it picks them up immediately,
+        # instead of only appearing after your NEXT message.
+        st.rerun()

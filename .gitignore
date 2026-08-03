@@ -14,3 +14,11 @@ wheels/
 
 # Logs
 logs/
+
+# VSCode 
+.vscode/
+
+# display
+display.ipynb
+
+workspace/
